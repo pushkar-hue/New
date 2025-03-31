@@ -17,7 +17,7 @@ from flask_cors import CORS
 load_dotenv()
 
 # Configure Gemini API
-genai.configure(api_key="AIzaSyC0OqN9ayyhNwWvbNLpKZNUhNuoMIfMAFQ")
+genai.configure(api_key="")
 gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 
 app = Flask(__name__)
