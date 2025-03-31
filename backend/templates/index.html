@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedDiagnosis - AI-Powered Medical Diagnosis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='index_styles.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="logo">
+                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="40" height="40" rx="8" fill="#4285F4"/>
+                    <path d="M10 20H30M20 10V30M15 15H25V25H15V15Z" stroke="white" stroke-width="3" stroke-linecap="round"/>
+                </svg>
+                <span>MedDiagnosis</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="#" class="active">Home</a></li>
+                    <li><a href="#services">Services</a></li>
+                    <li><a href="#upload-section" id="diagnosis-nav-link">Diagnosis</a></li>
+                    <li><a href="#chat">Chat</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                    <li><a href="/symptom-checker">Symptom Checker</a></li>
+                </ul>
+            </nav>
+            <button class="appointment-btn">Get Started</button>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1>Healthcare<br>Solutions</h1>
+                <p>Advanced AI-powered medical diagnosis at your fingertips. Upload medical images for instant analysis and detailed reports.</p>
+                <button class="primary-btn" id="start-diagnosis">Start Diagnosis</button>
+            </div>
+            <div class="hero-image">
+                <img src="/api/placeholder/500/400" alt="Healthcare Professionals">
+            </div>
+        </div>
+    </section>
+
+    <section class="info-cards">
+        <div class="container">
+            <div class="card opening-hours">
+                <h3><i class="fas fa-clock"></i> Instant Results</h3>
+                <p>Get AI analysis within seconds</p>
+                <p class="highlight">Available 24/7</p>
+            </div>
+            <div class="card">
+                <h3><i class="fas fa-file-medical"></i> AI Diagnosis</h3>
+                <p>State-of-the-art models trained on medical imagery</p>
+                <button class="secondary-btn diagnosis-link">Explore</button>
+            </div>
+            <div class="card">
+                <h3><i class="fas fa-stethoscope"></i> Professional Reports</h3>
+                <p>Detailed PDF reports for sharing with healthcare providers</p>
+                <button class="secondary-btn">Learn More</button>
+            </div>
+            <div class="card">
+                <h3><i class="fas fa-robot"></i> AI Assistant</h3>
+                <p>Chat with our medical AI assistant for general guidance</p>
+                <button class="secondary-btn" id="chat-btn">Chat Now</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="services" class="services">
+        <div class="container">
+            <h2>Our Medical Services</h2>
+            <div class="service-content">
+                <div class="service-image">
+                    <img src="/api/placeholder/450/350" alt="Doctor with tablet">
+                    <div class="service-bubble b1">
+                        <i class="fas fa-lungs"></i>
+                        <span>COVID-19</span>
+                    </div>
+                    <div class="service-bubble b2">
+                        <i class="fas fa-virus"></i>
+                        <span>Disease</span>
+                    </div>
+                    <div class="service-bubble b3">
+                        <i class="fas fa-microscope"></i>
+                        <span>Analysis</span>
+                    </div>
+                </div>
+                <div class="service-info">
+                    <h3>AI Medical Analysis</h3>
+                    <p>Our advanced AI systems can analyze medical images to detect various conditions including skin cancer, COVID-19, pneumonia, and more. Simply upload your medical images and receive instant analysis with detailed reports.</p>
+                    <button class="primary-btn diagnosis-link">Learn More</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="models" class="models">
+        <div class="container">
+            <h2>Our Specialty</h2>
+            <div class="models-container">
+                {% for model_key, model in models.items() %}
+                <div class="model-card" data-model="{{ model_key }}">
+                    <div class="model-icon">
+                        <i class="fas fa-{% if model_key == 'skin_cancer' %}check-circle{% elif model_key == 'covid19' %}virus{% elif model_key == 'pneumonia' %}lungs{% elif model_key == 'malaria' %}microscope{% elif model_key == 'tuberculosis' %}bacterium{% else %}stethoscope{% endif %}"></i>
+                    </div>
+                    <div class="model-info">
+                        <h3>{{ model.display_name }}</h3>
+                        <p>{{ model.description }}</p>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </section>
+
+    <section class="upload-section" id="upload-section">
+        <div class="container">
+            <h2>AI Diagnosis</h2>
+            <div class="upload-container">
+                <div class="upload-area" id="upload-area">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <h3>Drag & Drop Medical Image</h3>
+                    <p>or</p>
+                    <label for="file-upload" class="custom-file-upload">
+                        Choose File
+                    </label>
+                    <input id="file-upload" type="file" accept="image/png, image/jpeg, image/jpg">
+                    <p class="file-types">Supported formats: JPG, JPEG, PNG</p>
+                </div>
+                <div class="model-selection">
+                    <h3>Select Diagnosis Model</h3>
+                    <select id="model-select">
+                        {% for model_key, model in models.items() %}
+                        <option value="{{ model_key }}">{{ model.display_name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button id="analyze-btn" class="primary-btn" disabled>Analyze Image</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="results-section hidden" id="results-section">
+        <div class="container">
+            <h2>Diagnosis Results</h2>
+            <div class="results-container">
+                <div class="results-image">
+                    <img id="results-img" src="" alt="Uploaded Image">
+                </div>
+                <div class="results-info">
+                    <div class="result-card">
+                        <h3>Diagnosis</h3>
+                        <p id="prediction-result">Loading...</p>
+                    </div>
+                    <div class="result-card">
+                        <h3>Confidence</h3>
+                        <div class="confidence-bar">
+                            <div id="confidence-level" class="confidence-level"></div>
+                        </div>
+                        <p id="confidence-text">0%</p>
+                    </div>
+                    <div class="result-card">
+                        <h3>Model Used</h3>
+                        <p id="model-used">Loading...</p>
+                    </div>
+                    <div class="result-buttons">
+                        <button id="download-report" class="primary-btn">Download Report</button>
+                        <button id="new-diagnosis" class="secondary-btn">New Diagnosis</button>
+                    </div>
+                </div>
+            </div>
+            <div class="report-preview">
+                <h3>Report Summary</h3>
+                <div id="report-content" class="report-content">
+                    Loading report data...
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="chat" class="chat-section">
+        <div class="container">
+            <h2>Chat with Medical AI Assistant</h2>
+            <div class="chat-container">
+                <div class="chat-image">
+                    <img src="/api/placeholder/400/300" alt="Chat with AI">
+                </div>
+                <div class="chat-info">
+                    <h3>Online Assistance</h3>
+                    <p>Get answers to your medical questions from our AI assistant. Note that this is not a substitute for professional medical advice.</p>
+                    <a href="/chat" class="primary-btn">Start Chatting</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="team">
+        <div class="container">
+            <h2>Meet Our AI Models</h2>
+            <div class="team-container">
+                <div class="team-card">
+                    <img src="/api/placeholder/300/200" alt="Skin Cancer Detection">
+                    <h3>Skin Cancer</h3>
+                    <p>Detection Model</p>
+                </div>
+                <div class="team-card">
+                    <img src="/api/placeholder/300/200" alt="COVID-19 Analysis">
+                    <h3>COVID-19</h3>
+                    <p>Analysis Model</p>
+                </div>
+                <div class="team-card">
+                    <img src="/api/placeholder/300/200" alt="Pneumonia Detection">
+                    <h3>Pneumonia</h3>
+                    <p>Detection Model</p>
+                </div>
+            </div>
+            <button class="primary-btn">See All Models</button>
+        </div>
+    </section>
+
+    <footer id="contact">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-logo">
+                    <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="40" height="40" rx="8" fill="#4285F4"/>
+                        <path d="M10 20H30M20 10V30M15 15H25V25H15V15Z" stroke="white" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
+                    <h3>MedDiagnosis</h3>
+                    <p>AI-Powered Medical Diagnosis</p>
+                </div>
+                <div class="footer-links">
+                    <h4>Quick Links</h4>
+                    <ul>
+                        <li><a href="#">Home</a></li>
+                        <li><a href="#services">Services</a></li>
+                        <li><a href="#upload-section">Diagnosis</a></li>
+                        <li><a href="#chat">Chat</a></li>
+                    </ul>
+                </div>
+                <div class="footer-contact">
+                    <h4>Contact Us</h4>
+                    <p><i class="fas fa-envelope"></i> contact@meddiagnosis.com</p>
+                    <p><i class="fas fa-phone"></i> +1 (555) 123-4567</p>
+                </div>
+                <div class="footer-hours">
+                    <h4>System Availability</h4>
+                    <p>Our AI system is available 24/7</p>
+                    <p>Support Hours: Monday-Friday, 9AM-5PM</p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 MedDiagnosis. All Rights Reserved.</p>
+                <div class="social-links">
+                    <a href="#"><i class="fab fa-facebook"></i></a>
+                    <a href="#"><i class="fab fa-twitter"></i></a>
+                    <a href="#"><i class="fab fa-instagram"></i></a>
+                    <a href="#"><i class="fab fa-linkedin"></i></a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script>
+        // Add smooth scrolling functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Handle navigation link to diagnosis section
+            document.getElementById('diagnosis-nav-link').addEventListener('click', function(e) {
+                e.preventDefault();
+                document.getElementById('upload-section').scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Handle Start Diagnosis button in hero section
+            document.getElementById('start-diagnosis').addEventListener('click', function() {
+                document.getElementById('upload-section').scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+            
+            // Handle all buttons with the class 'diagnosis-link'
+            const diagnosisLinks = document.querySelectorAll('.diagnosis-link');
+            diagnosisLinks.forEach(link => {
+                link.addEventListener('click', function() {
+                    document.getElementById('upload-section').scrollIntoView({
+                        behavior: 'smooth'
+                    });
+                });
+            });
+        });
+    </script>
+</body>
+</html>
