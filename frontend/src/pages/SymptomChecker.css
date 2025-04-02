@@ -1,0 +1,41 @@
+.symptom-checker {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .symptom-checker-header {
+    text-align: center;
+    margin-bottom: 1rem;
+  }
+  
+  .symptom-checker-header h1 {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  
+  .symptom-checker-header p {
+    color: var(--text-light);
+  }
+  
+  .symptom-checker-content {
+    max-width: 800px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  
+  .analysis-result {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .back-button {
+    align-self: center;
+    background-color: var(--text-light);
+  }
+  
+  .back-button:hover {
+    background-color: var(--text-color);
+  }
+  
