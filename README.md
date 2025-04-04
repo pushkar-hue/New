@@ -106,7 +106,7 @@ All AI models were developed from scratch and trained on publicly available medi
 Clone the repository:
 
 ```bash
-git clone https://github.com/pushkar-hue/disease-detection-improved.git
+git clone https://github.com/pushkar-hue/MedDiagnosis.git
 cd disease-detection-improved
 ```
 
