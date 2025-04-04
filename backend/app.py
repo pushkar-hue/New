@@ -34,7 +34,7 @@ gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 
 video_rooms = {}
 
-app.config['JWT_SECRET_KEY'] = 'AIzaSyC0OqN9ayyhNwWvbNLpKZNUhNuoMIfMAFQ'  # Change this to a secure random key
+app.config['JWT_SECRET_KEY'] = ''  # Change this to a secure random key
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 jwt = JWTManager(app)
 
