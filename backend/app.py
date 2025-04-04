@@ -12,6 +12,18 @@ from dotenv import load_dotenv
 import base64
 from report import generate_professional_report
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import timedelta
+import uuid
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import time
+import secrets
+
+
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Load environment variables
 load_dotenv()
@@ -20,12 +32,26 @@ load_dotenv()
 genai.configure(api_key="")
 gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+video_rooms = {}
+
+app.config['JWT_SECRET_KEY'] = 'AIzaSyC0OqN9ayyhNwWvbNLpKZNUhNuoMIfMAFQ'  # Change this to a secure random key
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+jwt = JWTManager(app)
+
+
+
 
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
+
+
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Simple in-memory chat storage (use a database in production)
+chat_messages = {}
+chat_rooms = {}
+
 
 # Create upload folder if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -76,6 +102,300 @@ MODELS = {
 
 # Initialize model cache
 model_cache = {}
+
+# Create a simple user database (in a real app, use a proper database)
+users = {
+    # Example users
+    "user1@example.com": {
+        "id": "user-1",
+        "name": "John Doe",
+        "email": "user1@example.com",
+        "password": generate_password_hash("password123"),
+        "role": "patient"
+    },
+    "doctor1@example.com": {
+        "id": "doctor-1",
+        "name": "Dr. Sarah Johnson",
+        "email": "doctor1@example.com",
+        "password": generate_password_hash("password123"),
+        "role": "doctor"
+    }
+}
+
+# Authentication routes
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    name = data.get('name')
+    role = data.get('role', 'patient')
+    
+    if not email or not password or not name:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    if email in users:
+        return jsonify({"error": "Email already registered"}), 400
+    
+    user_id = f"user-{uuid.uuid4().hex[:8]}"
+    users[email] = {
+        "id": user_id,
+        "name": name,
+        "email": email,
+        "password": generate_password_hash(password),
+        "role": role
+    }
+    
+    access_token = create_access_token(identity=email)
+    
+    return jsonify({
+        "id": user_id,
+        "name": name,
+        "email": email,
+        "role": role,
+        "token": access_token
+    }), 201
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not email or not password:
+        return jsonify({"error": "Missing email or password"}), 400
+    
+    user = users.get(email)
+    if not user or not check_password_hash(user['password'], password):
+        return jsonify({"error": "Invalid email or password"}), 401
+    
+    access_token = create_access_token(identity=email)
+    
+    return jsonify({
+        "id": user['id'],
+        "name": user['name'],
+        "email": user['email'],
+        "role": user['role'],
+        "token": access_token
+    }), 200
+
+@app.route('/api/user', methods=['GET'])
+@jwt_required()
+def get_user():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({
+        "id": user['id'],
+        "name": user['name'],
+        "email": user['email'],
+        "role": user['role']
+    }), 200
+
+
+@app.route('/api/chat/history/<room_id>', methods=['GET'])
+@jwt_required()
+def get_chat_history(room_id):
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Check if user has access to this chat room
+    if room_id not in chat_rooms or user['id'] not in chat_rooms[room_id]['participants']:
+        return jsonify({"error": "Access denied"}), 403
+    
+    messages = chat_messages.get(room_id, [])
+    
+    return jsonify(messages), 200
+
+@app.route('/api/chat/rooms', methods=['GET'])
+@jwt_required()
+def get_chat_rooms():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    user_rooms = []
+    for room_id, room in chat_rooms.items():
+        if user['id'] in room['participants']:
+            # Get the other participant
+            other_participant_id = next((p for p in room['participants'] if p != user['id']), None)
+            other_participant = next((u for u in users.values() if u['id'] == other_participant_id), None)
+            
+            # Get the last message
+            messages = chat_messages.get(room_id, [])
+            last_message = messages[-1] if messages else None
+            
+            user_rooms.append({
+                "id": room_id,
+                "name": room['name'],
+                "other_participant": {
+                    "id": other_participant['id'],
+                    "name": other_participant['name'],
+                    "role": other_participant['role']
+                } if other_participant else None,
+                "last_message": last_message,
+                "unread_count": sum(1 for m in messages if not m['read'] and m['sender_id'] != user['id'])
+            })
+    
+    return jsonify(user_rooms), 200
+
+# Socket.IO events
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('join')
+def handle_join(data):
+    room = data['room']
+    join_room(room)
+    print(f'Client joined room: {room}')
+
+@socketio.on('leave')
+def handle_leave(data):
+    room = data['room']
+    leave_room(room)
+    print(f'Client left room: {room}')
+
+@socketio.on('message')
+def handle_message(data):
+    room_id = data['room']
+    message = data['message']
+    sender_id = data['sender_id']
+    sender_name = data['sender_name']
+    
+    # Create message object
+    msg = {
+        'id': str(uuid.uuid4()),
+        'room_id': room_id,
+        'sender_id': sender_id,
+        'sender_name': sender_name,
+        'content': message,
+        'timestamp': time.time(),
+        'read': False
+    }
+    
+    # Store message
+    if room_id not in chat_messages:
+        chat_messages[room_id] = []
+    chat_messages[room_id].append(msg)
+    
+    # Broadcast to room
+    emit('message', msg, room=room_id)
+
+
+
+@app.route('/api/video/create-room', methods=['POST'])
+@jwt_required()
+def create_video_room():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Generate a unique room ID
+    room_id = f"room-{secrets.token_hex(6)}"
+    
+    # Store room information
+    video_rooms[room_id] = {
+        'id': room_id,
+        'creator': user['id'],
+        'created_at': time.time(),
+        'participants': [user['id']],
+        'active': True
+    }
+    
+    return jsonify({
+        'room_id': room_id,
+        'creator': user['name'],
+        'created_at': video_rooms[room_id]['created_at']
+    }), 201
+
+@app.route('/api/video/join-room/<room_id>', methods=['POST'])
+@jwt_required()
+def join_video_room(room_id):
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if room_id not in video_rooms:
+        return jsonify({"error": "Room not found"}), 404
+    
+    if not video_rooms[room_id]['active']:
+        return jsonify({"error": "Room is no longer active"}), 400
+    
+    # Add user to participants if not already there
+    if user['id'] not in video_rooms[room_id]['participants']:
+        video_rooms[room_id]['participants'].append(user['id'])
+    
+    return jsonify({
+        'room_id': room_id,
+        'creator': next((u['name'] for u in users.values() if u['id'] == video_rooms[room_id]['creator']), None),
+        'participants': [
+            {
+                'id': p,
+                'name': next((u['name'] for u in users.values() if u['id'] == p), None)
+            }
+            for p in video_rooms[room_id]['participants']
+        ]
+    }), 200
+
+@app.route('/api/video/end-room/<room_id>', methods=['POST'])
+@jwt_required()
+def end_video_room(room_id):
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if room_id not in video_rooms:
+        return jsonify({"error": "Room not found"}), 404
+    
+    # Only the creator can end the room
+    if user['id'] != video_rooms[room_id]['creator']:
+        return jsonify({"error": "Only the creator can end the room"}), 403
+    
+    video_rooms[room_id]['active'] = False
+    
+    return jsonify({'success': True}), 200
+
+# Socket.IO events for video call signaling
+@socketio.on('video-offer')
+def handle_video_offer(data):
+    room = data['room']
+    emit('video-offer', data, room=room, include_self=False)
+
+@socketio.on('video-answer')
+def handle_video_answer(data):
+    room = data['room']
+    emit('video-answer', data, room=room, include_self=False)
+
+@socketio.on('ice-candidate')
+def handle_ice_candidate(data):
+    room = data['room']
+    emit('ice-candidate', data, room=room, include_self=False)
+
+@socketio.on('leave-room')
+def handle_leave_room(data):
+    room = data['room']
+    leave_room(room)
+    emit('user-left', {'user_id': data['user_id']}, room=room)
+
 
 def load_model(model_key):
     """Load model if not already in cache"""
