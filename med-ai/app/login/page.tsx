@@ -30,9 +30,18 @@ export default function LoginPage() {
 
     try {
       await login(email, password)
+      // Store user ID in localStorage for socket connection
+      const userData = JSON.parse(localStorage.getItem("user_data") || "{}")
+      if (userData.id) {
+        localStorage.setItem("user_id", userData.id)
+      }
       router.push(redirect)
-    } catch (err) {
-      setError("Invalid email or password. Please try again.")
+    } catch (err: any) {
+      if (err.response?.data?.error) {
+        setError(err.response.data.error)
+      } else {
+        setError("Invalid email or password. Please try again.")
+      }
     } finally {
       setIsLoading(false)
     }
@@ -130,4 +139,3 @@ export default function LoginPage() {
     </div>
   )
 }
-

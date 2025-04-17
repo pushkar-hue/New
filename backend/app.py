@@ -2,19 +2,18 @@ import os
 import torch
 import torchvision
 from torchvision import transforms
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, session
 from werkzeug.utils import secure_filename
 from PIL import Image
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import google.generativeai as genai
 from dotenv import load_dotenv
 import base64
 from report import generate_professional_report
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
+from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, get_jwt_identity, jwt_required, get_jwt
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import timedelta
 import uuid
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import time
@@ -29,15 +28,21 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 load_dotenv()
 
 # Configure Gemini API
-genai.configure(api_key="")
+api_key = os.getenv('GEMINI_API_KEY', 'AIzaSyC0OqN9ayyhNwWvbNLpKZNUhNuoMIfMAFQ')
+genai.configure(api_key=api_key)
 gemini_model = genai.GenerativeModel('gemini-1.5-pro')
 
-video_rooms = {}
 
-app.config['JWT_SECRET_KEY'] = ''  # Change this to a secure random key
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', secrets.token_hex(32))
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)  # Shorter lifetime for access tokens
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)  # Longer lifetime for refresh tokens
+app.config['JWT_ALGORITHM'] = 'HS256'
+app.config['JWT_BLACKLIST_ENABLED'] = True
+app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access', 'refresh']
 jwt = JWTManager(app)
 
+token_blocklist = set()
 
 
 
@@ -51,6 +56,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # Simple in-memory chat storage (use a database in production)
 chat_messages = {}
 chat_rooms = {}
+video_rooms = {}
+online_users = {} 
 
 
 # Create upload folder if it doesn't exist
@@ -93,7 +100,7 @@ MODELS = {
         'description': 'Classifies skin lesions as benign or malignant'
     },
     'tuberculosis': {
-        'file': 'models/tuberculosis_model.pth',
+        'file': 'models/tb_model.pth',
         'classes': ['Normal', 'Tuberculosis'],
         'display_name': 'Tuberculosis Screening',
         'description': 'Screens chest X-rays for signs of tuberculosis'
@@ -102,6 +109,18 @@ MODELS = {
 
 # Initialize model cache
 model_cache = {}
+
+# Add this after initializing model_cache 
+def preload_models():
+    """Preload all models at application startup"""
+    print("Preloading models...")
+    for model_key in MODELS.keys():
+        try:
+            load_model(model_key)
+            print(f"Successfully preloaded {model_key} model")
+        except Exception as e:
+            print(f"Failed to preload {model_key} model: {str(e)}")
+    print("Model preloading complete")
 
 # Create a simple user database (in a real app, use a proper database)
 users = {
@@ -118,11 +137,20 @@ users = {
         "name": "Dr. Sarah Johnson",
         "email": "doctor1@example.com",
         "password": generate_password_hash("password123"),
-        "role": "doctor"
+        "role": "doctor",
+        "specialty": "General Medicine",
+        "availability": True,  # Indicates if doctor is available for calls
+        "status": "online"  # Track online status
     }
 }
 
-# Authentication routes
+
+@jwt.token_in_blocklist_loader
+def check_if_token_is_revoked(jwt_header, jwt_payload):
+    jti = jwt_payload["jti"]
+    return jti in token_blocklist
+
+
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
@@ -130,31 +158,78 @@ def register():
     password = data.get('password')
     name = data.get('name')
     role = data.get('role', 'patient')
+    specialty = data.get('specialty', 'General Medicine') if role == 'doctor' else None
     
+    # Validate required fields
     if not email or not password or not name:
         return jsonify({"error": "Missing required fields"}), 400
+    
+    # Basic email validation
+    if '@' not in email or '.' not in email:
+        return jsonify({"error": "Invalid email format"}), 400
+    
+    # Password strength check
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
     
     if email in users:
         return jsonify({"error": "Email already registered"}), 400
     
-    user_id = f"user-{uuid.uuid4().hex[:8]}"
+    # Generate user ID based on role
+    user_id = f"{role}-{uuid.uuid4().hex[:8]}"
+    
+    # Create user with additional fields
     users[email] = {
         "id": user_id,
         "name": name,
         "email": email,
         "password": generate_password_hash(password),
-        "role": role
+        "role": role,
+        "avatar": f"/placeholder.svg?height=40&width=40",
+        "created_at": time.time(),
+        "status": "online"
     }
     
+    # Add specialty for doctors
+    if role == 'doctor':
+        users[email]["specialty"] = specialty
+        users[email]["availability"] = True  # Initially available
+    
+    # Generate tokens
     access_token = create_access_token(identity=email)
+    refresh_token = create_refresh_token(identity=email)
     
     return jsonify({
         "id": user_id,
         "name": name,
         "email": email,
         "role": role,
-        "token": access_token
+        "avatar": users[email]["avatar"],
+        "access_token": access_token,
+        "refresh_token": refresh_token
     }), 201
+
+@app.route('/api/logout', methods=['POST'])
+@jwt_required()
+def logout():
+    jti = get_jwt()["jti"]
+    token_blocklist.add(jti)
+    
+    # Update user status to offline
+    current_user_email = get_jwt_identity()
+    if current_user_email in users:
+        users[current_user_email]["status"] = "offline"
+        
+        # Notify other users about status change
+        user_id = users[current_user_email]["id"]
+        socketio.emit('user_status_change', {
+            'user_id': user_id,
+            'status': 'offline'
+        }, broadcast=True)
+    
+    return jsonify({"success": True, "message": "Logged out successfully"}), 200
+
+
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -169,15 +244,236 @@ def login():
     if not user or not check_password_hash(user['password'], password):
         return jsonify({"error": "Invalid email or password"}), 401
     
+    # Update user status to online
+    user['status'] = "online"
+    
+    # Generate tokens
     access_token = create_access_token(identity=email)
+    refresh_token = create_refresh_token(identity=email)
+    
+    # Notify other users about status change
+    socketio.emit('user_status_change', {
+        'user_id': user['id'],
+        'status': 'online'
+    }, broadcast=True)
     
     return jsonify({
         "id": user['id'],
         "name": user['name'],
         "email": user['email'],
         "role": user['role'],
-        "token": access_token
+        "access_token": access_token,
+        "refresh_token": refresh_token
     }), 200
+
+
+@app.route('/api/token/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh_token():
+    current_user_email = get_jwt_identity()
+    access_token = create_access_token(identity=current_user_email)
+    
+    return jsonify({
+        "access_token": access_token
+    }), 200
+
+@app.route('/api/doctors', methods=['GET'])
+@jwt_required()
+def get_doctors():
+    """Get all available doctors with filtering options and real-time status"""
+    current_user_email = get_jwt_identity()
+    current_user = users.get(current_user_email)
+    
+    if not current_user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Get query parameters for filtering
+    specialty = request.args.get('specialty')
+    name_search = request.args.get('name')
+    availability = request.args.get('availability')  # Filter by availability
+    
+    doctors = []
+    for user in users.values():
+        if user['role'] != 'doctor':
+            continue
+            
+        # Skip if specialty filter is applied and doesn't match
+        if specialty and user.get('specialty', '') != specialty:
+            continue
+            
+        # Skip if name search is applied and doesn't match
+        if name_search and name_search.lower() not in user['name'].lower():
+            continue
+            
+        # Skip if availability filter is applied and doesn't match
+        if availability and str(user.get('availability', False)).lower() != availability.lower():
+            continue
+            
+        # Check if there's an existing chat room with this doctor
+        existing_room = None
+        for room_id, room in chat_rooms.items():
+            if (current_user['id'] in room['participants'] and 
+                user['id'] in room['participants']):
+                existing_room = room_id
+                break
+                
+        doctors.append({
+            'id': user['id'],
+            'name': user['name'],
+            'email': user['email'],
+            'avatar': user.get('avatar', f"/placeholder.svg?height=40&width=40"),
+            'specialty': user.get('specialty', 'General Medicine'),
+            'status': user.get('status', 'offline'),
+            'availability': user.get('availability', False),
+            'existing_chat_room': existing_room
+        })
+    
+    return jsonify(doctors), 200
+
+
+@app.route('/api/doctors/search', methods=['GET'])
+@jwt_required()
+def search_doctors():
+    """Search doctors by name, specialty, or availability"""
+    current_user_email = get_jwt_identity()
+    current_user = users.get(current_user_email)
+    
+    if not current_user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Get search parameters
+    search_query = request.args.get('query', '').lower()
+    specialty = request.args.get('specialty')
+    availability = request.args.get('availability')
+    
+    matching_doctors = []
+    
+    for user in users.values():
+        if user['role'] != 'doctor':
+            continue
+            
+        # Apply filters
+        name_match = search_query in user['name'].lower() if search_query else True
+        specialty_match = user.get('specialty') == specialty if specialty else True
+        availability_match = str(user.get('availability', False)).lower() == availability.lower() if availability else True
+        
+        # Check if doctor matches all criteria
+        if name_match and specialty_match and availability_match:
+            # Check if there's an existing chat room with this doctor
+            existing_room = None
+            for room_id, room in chat_rooms.items():
+                if (current_user['id'] in room['participants'] and 
+                    user['id'] in room['participants']):
+                    existing_room = room_id
+                    break
+                    
+            matching_doctors.append({
+                'id': user['id'],
+                'name': user['name'],
+                'email': user['email'],
+                'avatar': user.get('avatar', f"/placeholder.svg?height=40&width=40"),
+                'specialty': user.get('specialty', 'General Medicine'),
+                'status': user.get('status', 'offline'),
+                'availability': user.get('availability', False),
+                'existing_chat_room': existing_room
+            })
+    
+    return jsonify(matching_doctors), 200
+
+@app.route('/api/video/call-doctor/<doctor_id>', methods=['POST'])
+@jwt_required()
+def call_specific_doctor(doctor_id):
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Verify the user is a patient
+    if user['role'] != 'patient':
+        return jsonify({"error": "Only patients can initiate doctor calls"}), 403
+    
+    # Find the requested doctor
+    doctor = None
+    for u in users.values():
+        if u['id'] == doctor_id and u['role'] == 'doctor':
+            doctor = u
+            break
+            
+    if not doctor:
+        return jsonify({"error": "Doctor not found"}), 404
+        
+    if not doctor.get('availability', False):
+        return jsonify({"error": "Doctor is not available right now"}), 400
+    
+    # Generate a unique room ID
+    room_id = f"room-{secrets.token_hex(6)}"
+    
+    # Create the room with patient and doctor
+    video_rooms[room_id] = {
+        'id': room_id,
+        'creator': user['id'],
+        'created_at': time.time(),
+        'participants': [user['id'], doctor['id']],
+        'active': True,
+        'patient_id': user['id'],
+        'doctor_id': doctor['id'],
+        'ended_by': None,
+        'end_time': None
+    }
+    
+    # Notify the doctor about the new video call
+    socketio.emit('video_call_request', {
+        'room_id': room_id,
+        'patient_name': user['name'],
+        'patient_id': user['id']
+    }, room=doctor['id'])
+    
+    return jsonify({
+        'room_id': room_id,
+        'creator': user['name'],
+        'doctor': {
+            'id': doctor['id'],
+            'name': doctor['name'],
+            'specialty': doctor.get('specialty', 'General Medicine')
+        },
+        'created_at': video_rooms[room_id]['created_at']
+    }), 201
+
+
+@app.route('/api/doctors/availability', methods=['POST'])
+@jwt_required()
+def update_doctor_availability():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if user['role'] != 'doctor':
+        return jsonify({"error": "Only doctors can update availability"}), 403
+    
+    data = request.json
+    availability = data.get('availability')
+    
+    if availability is None:
+        return jsonify({"error": "Availability status is required"}), 400
+    
+    # Update availability
+    user['availability'] = bool(availability)
+    
+    # Notify all users about the change
+    socketio.emit('doctor_availability_change', {
+        'doctor_id': user['id'],
+        'availability': user['availability']
+    }, broadcast=True)
+    
+    return jsonify({
+        "success": True,
+        "availability": user['availability']
+    }), 200
+
+
 
 @app.route('/api/user', methods=['GET'])
 @jwt_required()
@@ -254,7 +550,26 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print('Client disconnected')
+    """Update user status when disconnected"""
+    sid = request.sid
+    if sid in online_users:
+        user_id = online_users[sid]
+        
+        # Find user by ID
+        for u in users.values():
+            if u['id'] == user_id:
+                u['status'] = 'offline'
+                break
+                
+        # Notify other users
+        socketio.emit('user_status_change', {
+            'user_id': user_id,
+            'status': 'offline'
+        }, skip_sid=sid)  # skip_sid ensures the message isn't sent back to the disconnecting client
+                
+        # Remove from tracking
+        del online_users[sid]
+        
 
 @socketio.on('join')
 def handle_join(data):
@@ -267,6 +582,22 @@ def handle_leave(data):
     room = data['room']
     leave_room(room)
     print(f'Client left room: {room}')
+
+@socketio.on('video-offer')
+def handle_video_offer(data):
+    room = data['room']
+    emit('video-offer', data, room=room, include_self=False)
+
+@socketio.on('video-answer')
+def handle_video_answer(data):
+    room = data['room']
+    emit('video-answer', data, room=room, include_self=False)
+
+
+@socketio.on('ice-candidate')
+def handle_ice_candidate(data):
+    room = data['room']
+    emit('ice-candidate', data, room=room, include_self=False)
 
 @socketio.on('message')
 def handle_message(data):
@@ -294,8 +625,6 @@ def handle_message(data):
     # Broadcast to room
     emit('message', msg, room=room_id)
 
-
-
 @app.route('/api/video/create-room', methods=['POST'])
 @jwt_required()
 def create_video_room():
@@ -305,24 +634,130 @@ def create_video_room():
     if not user:
         return jsonify({"error": "User not found"}), 404
     
+    data = request.json or {}
+    specific_doctor_id = data.get('doctor_id')  # Optional: Request a specific doctor
+    
     # Generate a unique room ID
     room_id = f"room-{secrets.token_hex(6)}"
     
-    # Store room information
-    video_rooms[room_id] = {
-        'id': room_id,
-        'creator': user['id'],
-        'created_at': time.time(),
-        'participants': [user['id']],
-        'active': True
-    }
+    if user['role'] == 'patient':
+        # If specific doctor requested
+        if specific_doctor_id:
+            # Find the requested doctor
+            doctor = None
+            for u in users.values():
+                if u['id'] == specific_doctor_id and u['role'] == 'doctor':
+                    doctor = u
+                    break
+                    
+            if not doctor:
+                return jsonify({"error": "Doctor not found"}), 404
+                
+            if not doctor.get('availability', False):
+                return jsonify({"error": "Doctor is not available right now"}), 400
+                
+            if doctor.get('status', 'offline') != 'online':
+                return jsonify({"error": "Doctor is currently offline"}), 400
+        else:
+            # Auto-assign an available doctor
+            available_doctors = [u for u in users.values() 
+                               if u['role'] == 'doctor' 
+                               and u.get('availability', False)
+                               and u.get('status', 'offline') == 'online']
+            
+            if not available_doctors:
+                return jsonify({"error": "No doctors available at this time"}), 404
+            
+            # Select the first available doctor (could be improved with load balancing)
+            doctor = available_doctors[0]
+        
+        # Create the room with patient and doctor
+        video_rooms[room_id] = {
+            'id': room_id,
+            'creator': user['id'],
+            'created_at': time.time(),
+            'participants': [user['id'], doctor['id']],
+            'active': True,
+            'patient_id': user['id'],
+            'doctor_id': doctor['id'],
+            'ended_by': None,
+            'end_time': None,
+            'call_status': 'pending'  # New field to track call status
+        }
+        
+        # Notify the doctor about the new video call
+        socketio.emit('video_call_request', {
+            'room_id': room_id,
+            'patient_name': user['name'],
+            'patient_id': user['id'],
+            'patient_avatar': user.get('avatar', f"/placeholder.svg?height=40&width=40")
+        }, room=doctor['id'])
+        
+        return jsonify({
+            'room_id': room_id,
+            'creator': user['name'],
+            'doctor': {
+                'id': doctor['id'],
+                'name': doctor['name'],
+                'specialty': doctor.get('specialty', 'General Medicine'),
+                'avatar': doctor.get('avatar', f"/placeholder.svg?height=40&width=40")
+            },
+            'created_at': video_rooms[room_id]['created_at'],
+            'call_status': 'pending'
+        }), 201
     
-    return jsonify({
-        'room_id': room_id,
-        'creator': user['name'],
-        'created_at': video_rooms[room_id]['created_at']
-    }), 201
-
+    elif user['role'] == 'doctor':
+        # Doctors can create a room for an invited patient
+        patient_id = data.get('patient_id')
+        
+        if not patient_id:
+            return jsonify({"error": "Patient ID is required"}), 400
+        
+        # Find the patient
+        patient = None
+        for u in users.values():
+            if u['id'] == patient_id and u['role'] == 'patient':
+                patient = u
+                break
+                
+        if not patient:
+            return jsonify({"error": "Patient not found"}), 404
+        
+        # Create the room
+        video_rooms[room_id] = {
+            'id': room_id,
+            'creator': user['id'],
+            'created_at': time.time(),
+            'participants': [user['id'], patient['id']],
+            'active': True,
+            'patient_id': patient['id'],
+            'doctor_id': user['id'],
+            'ended_by': None,
+            'end_time': None,
+            'call_status': 'pending'  # New field to track call status
+        }
+        
+        # Notify the patient about the new video call
+        socketio.emit('video_call_request', {
+            'room_id': room_id,
+            'doctor_name': user['name'],
+            'doctor_id': user['id'],
+            'doctor_avatar': user.get('avatar', f"/placeholder.svg?height=40&width=40"),
+            'doctor_specialty': user.get('specialty', 'General Medicine')
+        }, room=patient['id'])
+        
+        return jsonify({
+            'room_id': room_id,
+            'creator': user['name'],
+            'patient': {
+                'id': patient['id'],
+                'name': patient['name'],
+                'avatar': patient.get('avatar', f"/placeholder.svg?height=40&width=40")
+            },
+            'created_at': video_rooms[room_id]['created_at'],
+            'call_status': 'pending'
+        }), 201
+    
 @app.route('/api/video/join-room/<room_id>', methods=['POST'])
 @jwt_required()
 def join_video_room(room_id):
@@ -335,24 +770,125 @@ def join_video_room(room_id):
     if room_id not in video_rooms:
         return jsonify({"error": "Room not found"}), 404
     
-    if not video_rooms[room_id]['active']:
+    room = video_rooms[room_id]
+    
+    if not room['active']:
         return jsonify({"error": "Room is no longer active"}), 400
     
-    # Add user to participants if not already there
-    if user['id'] not in video_rooms[room_id]['participants']:
-        video_rooms[room_id]['participants'].append(user['id'])
+    # Check if user is allowed to join this room
+    if user['id'] not in room['participants']:
+        return jsonify({"error": "You are not authorized to join this room"}), 403
+    
+    # Update call status when participants join
+    if room.get('call_status') == 'pending':
+        room['call_status'] = 'connected'
+    
+    # Get participant information
+    participants = []
+    for p_id in room['participants']:
+        participant = None
+        for u in users.values():
+            if u['id'] == p_id:
+                participant = {
+                    'id': u['id'],
+                    'name': u['name'],
+                    'role': u['role'],
+                    'avatar': u.get('avatar', f"/placeholder.svg?height=40&width=40"),
+                    'specialty': u.get('specialty') if u['role'] == 'doctor' else None
+                }
+                break
+        if participant:
+            participants.append(participant)
+    
+    # Notify other participants that this user has joined
+    socketio.emit('user_joined_video', {
+        'room_id': room_id,
+        'user': {
+            'id': user['id'],
+            'name': user['name'],
+            'role': user['role'],
+            'avatar': user.get('avatar', f"/placeholder.svg?height=40&width=40")
+        }
+    }, room=room_id)
+    
+    # Add Socket.IO listener for this room
+    socketio.on_event('join_room', lambda data: socketio.join_room(room_id))
     
     return jsonify({
         'room_id': room_id,
-        'creator': next((u['name'] for u in users.values() if u['id'] == video_rooms[room_id]['creator']), None),
-        'participants': [
-            {
-                'id': p,
-                'name': next((u['name'] for u in users.values() if u['id'] == p), None)
-            }
-            for p in video_rooms[room_id]['participants']
-        ]
+        'participants': participants,
+        'created_at': room['created_at'],
+        'patient_id': room['patient_id'],
+        'doctor_id': room['doctor_id'],
+        'call_status': room.get('call_status', 'connected')
     }), 200
+
+@app.route('/api/video/respond/<room_id>', methods=['POST'])
+@jwt_required()
+def respond_to_video_call(room_id):
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    if room_id not in video_rooms:
+        return jsonify({"error": "Room not found"}), 404
+    
+    room = video_rooms[room_id]
+    
+    # Check if user is allowed to respond to this call
+    if user['id'] not in room['participants']:
+        return jsonify({"error": "You are not authorized for this room"}), 403
+    
+    data = request.json or {}
+    response = data.get('response', 'accept')  # accept or reject
+    
+    # Update room status based on response
+    if response == 'accept':
+        room['call_status'] = 'accepted'
+        
+        # Get the other participant
+        other_participant_id = next((p for p in room['participants'] if p != user['id']), None)
+        
+        # Notify the other participant about acceptance
+        if other_participant_id:
+            socketio.emit('video_call_accepted', {
+                'room_id': room_id,
+                'accepted_by': user['name'],
+                'accepted_by_id': user['id']
+            }, room=other_participant_id)
+            
+        return jsonify({
+            'status': 'accepted',
+            'room_id': room_id
+        }), 200
+    
+    elif response == 'reject':
+        room['active'] = False
+        room['ended_by'] = user['id']
+        room['end_time'] = time.time()
+        room['call_status'] = 'rejected'
+        room['end_reason'] = f"Call rejected by {user['name']}"
+        
+        # Get the other participant
+        other_participant_id = next((p for p in room['participants'] if p != user['id']), None)
+        
+        # Notify the other participant about rejection
+        if other_participant_id:
+            socketio.emit('video_call_rejected', {
+                'room_id': room_id,
+                'rejected_by': user['name'],
+                'rejected_by_id': user['id']
+            }, room=other_participant_id)
+            
+        return jsonify({
+            'status': 'rejected',
+            'room_id': room_id
+        }), 200
+    
+    else:
+        return jsonify({"error": "Invalid response. Must be 'accept' or 'reject'"}), 400
 
 @app.route('/api/video/end-room/<room_id>', methods=['POST'])
 @jwt_required()
@@ -366,19 +902,167 @@ def end_video_room(room_id):
     if room_id not in video_rooms:
         return jsonify({"error": "Room not found"}), 404
     
-    # Only the creator can end the room
-    if user['id'] != video_rooms[room_id]['creator']:
-        return jsonify({"error": "Only the creator can end the room"}), 403
+    room = video_rooms[room_id]
     
-    video_rooms[room_id]['active'] = False
+    # Check if user is a participant in this room
+    if user['id'] not in room['participants']:
+        return jsonify({"error": "You are not a participant in this room"}), 403
     
-    return jsonify({'success': True}), 200
+    # Only participants can end the room
+    if user['id'] not in room['participants']:
+        return jsonify({"error": "Only participants can end the room"}), 403
+    
+    data = request.json or {}
+    end_reason = data.get('reason', 'Call ended by ' + user['name'])
+    follow_up = data.get('follow_up')
+    notes = data.get('notes')
+    
+    # Update room status
+    room['active'] = False
+    room['ended_by'] = user['id']
+    room['end_time'] = time.time()
+    room['end_reason'] = end_reason
+    
+    # If there are follow-up details or notes, save them
+    if follow_up:
+        room['follow_up'] = follow_up
+        
+    if notes:
+        room['notes'] = notes
+    
+    # Notify all participants that the room has ended
+    socketio.emit('video_room_ended', {
+        'room_id': room_id,
+        'ended_by': user['name'],
+        'end_reason': end_reason,
+        'follow_up': follow_up
+    }, room=room_id)
+    
+    # If doctor ended the call and set follow-up, create a notification
+    if user['role'] == 'doctor' and follow_up:
+        patient_id = room['patient_id']
+        # In a real app, you would store this in a notifications table
+        socketio.emit('follow_up_notification', {
+            'doctor_name': user['name'],
+            'follow_up_date': follow_up,
+            'notes': notes
+        }, room=patient_id)
+    
+    return jsonify({
+        'success': True,
+        'ended_at': room['end_time'],
+        'follow_up': follow_up if follow_up else None
+    }), 200
+
+@app.route('/api/video/rooms', methods=['GET'])
+@jwt_required()
+def get_video_rooms():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Filter active rooms where user is a participant
+    active_rooms = []
+    for room_id, room in video_rooms.items():
+        if user['id'] in room['participants'] and room['active']:
+            # Get other participant info
+            other_participant_id = next((p for p in room['participants'] if p != user['id']), None)
+            other_participant = None
+            
+            for u in users.values():
+                if u['id'] == other_participant_id:
+                    other_participant = {
+                        'id': u['id'],
+                        'name': u['name'],
+                        'role': u['role'],
+                        'specialty': u.get('specialty') if u['role'] == 'doctor' else None
+                    }
+                    break
+            
+            active_rooms.append({
+                'id': room_id,
+                'created_at': room['created_at'],
+                'other_participant': other_participant
+            })
+    
+    return jsonify(active_rooms), 200
+
+@app.route('/api/video/history', methods=['GET'])
+@jwt_required()
+def get_video_history():
+    current_user_email = get_jwt_identity()
+    user = users.get(current_user_email)
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Get completed video calls for this user
+    history = []
+    for room_id, room in video_rooms.items():
+        if user['id'] in room['participants'] and not room['active'] and room.get('end_time'):
+            # Get other participant info
+            other_participant_id = next((p for p in room['participants'] if p != user['id']), None)
+            other_participant = None
+            
+            for u in users.values():
+                if u['id'] == other_participant_id:
+                    other_participant = {
+                        'id': u['id'],
+                        'name': u['name'],
+                        'role': u['role']
+                    }
+                    break
+            
+            history.append({
+                'id': room_id,
+                'started_at': room['created_at'],
+                'ended_at': room['end_time'],
+                'duration': round((room['end_time'] - room['created_at']) / 60, 1),  # minutes
+                'other_participant': other_participant,
+                'follow_up': room.get('follow_up'),
+                'notes': room.get('notes')
+            })
+    
+    # Sort by start time (newest first)
+    history.sort(key=lambda x: x['started_at'], reverse=True)
+    
+    return jsonify(history), 200
+
 
 # Socket.IO events for video call signaling
 @socketio.on('video-offer')
 def handle_video_offer(data):
     room = data['room']
     emit('video-offer', data, room=room, include_self=False)
+
+@socketio.on('user_connected')
+def handle_user_connected(data):
+    """Track online users"""
+    user_id = data.get('user_id')
+    if not user_id:
+        return
+        
+    # Find user by ID
+    user = None
+    for u in users.values():
+        if u['id'] == user_id:
+            user = u
+            break
+            
+    if user:
+        # Update user status
+        user['status'] = 'online'
+        # Associate socket ID with user ID
+        online_users[request.sid] = user_id
+        
+        # Notify other users
+        socketio.emit('user_status_change', {
+            'user_id': user_id,
+            'status': 'online'
+        }, to=None)
+
 
 @socketio.on('video-answer')
 def handle_video_answer(data):
@@ -397,24 +1081,49 @@ def handle_leave_room(data):
     emit('user-left', {'user_id': data['user_id']}, room=room)
 
 
+def cleanup_stale_video_rooms():
+    current_time = time.time()
+    stale_threshold = 30 * 60  # 30 minutes
+    
+    for room_id, room in list(video_rooms.items()):
+        # Check if room is active but has been open for too long
+        if room['active'] and (current_time - room['created_at']) > stale_threshold:
+            room['active'] = False
+            room['end_time'] = current_time
+            room['end_reason'] = "Call automatically ended due to inactivity"
+            
+            # Notify participants
+            socketio.emit('video_room_ended', {
+                'room_id': room_id,
+                'ended_by': 'System',
+                'end_reason': room['end_reason']
+            }, room=room_id)
+
 def load_model(model_key):
     """Load model if not already in cache"""
     if model_key not in model_cache:
         print(f"Loading model: {model_key}")
         
-        # Initialize model architecture (using EfficientNet B0 for all models)
+        # Initialize model architecture
         model = torchvision.models.efficientnet_b0(weights=None)
         num_classes = len(MODELS[model_key]['classes'])
         
         model.classifier = torch.nn.Sequential(
-                                    torch.nn.Dropout(p=0.5),
-                                    torch.nn.Linear(model.classifier[1].in_features, num_classes)
-                                )
+            torch.nn.Dropout(p=0.5),
+            torch.nn.Linear(model.classifier[1].in_features, num_classes)
+        )
         
         # Load the saved weights
         model_path = MODELS[model_key]['file']
         try:
-            model.load_state_dict(torch.load(model_path, map_location=device))
+            loaded = torch.load(model_path, map_location=device)
+            
+            # Handle both full model and state_dict formats
+            if isinstance(loaded, torch.nn.Module):  # Full model case
+                model.load_state_dict(loaded.state_dict())
+            else:  # State dict case
+                model.load_state_dict(loaded)
+                
             model.to(device)
             model.eval()
             model_cache[model_key] = model
@@ -424,6 +1133,7 @@ def load_model(model_key):
             return None
     
     return model_cache[model_key]
+
 
 # Define image transformation for inference
 test_transform = transforms.Compose([
@@ -841,10 +1551,70 @@ def determine_recommended_models(analysis_text):
                 count += 1
     
     return recommended
+def add_sample_users():
+    """Add sample users for testing"""
+    if "patient1@example.com" not in users:
+        users["patient1@example.com"] = {
+            "id": "patient-1",
+            "name": "Jane Smith",
+            "email": "patient1@example.com",
+            "password": generate_password_hash("password123"),
+            "role": "patient",
+            "avatar": "/placeholder.svg?height=40&width=40",
+            "status": "offline"
+        }
+    
+    if "doctor2@example.com" not in users:
+        users["doctor2@example.com"] = {
+            "id": "doctor-2",
+            "name": "Dr. Michael Chen",
+            "email": "doctor2@example.com",
+            "password": generate_password_hash("password123"),
+            "role": "doctor",
+            "specialty": "Cardiology",
+            "avatar": "/placeholder.svg?height=40&width=40",
+            "availability": True,
+            "status": "offline"
+        }
+    
+    if "doctor3@example.com" not in users:
+        users["doctor3@example.com"] = {
+            "id": "doctor-3",
+            "name": "Dr. Emily Rodriguez",
+            "email": "doctor3@example.com",
+            "password": generate_password_hash("password123"),
+            "role": "doctor",
+            "specialty": "Dermatology",
+            "avatar": "/placeholder.svg?height=40&width=40",
+            "availability": False,
+            "status": "offline"
+        }
 
 if __name__ == '__main__':
     # Create a JSON file with model info for the frontend
     with open('static/model_info.json', 'w') as f:
         json.dump(MODELS, f)
     
-    app.run(debug=True)
+    # Add sample users
+    add_sample_users()
+    
+    # Preload models
+    preload_models()
+    
+    # Run stale room cleanup periodically
+    from threading import Thread
+    import time
+    
+    def background_cleanup():
+        while True:
+            time.sleep(300)  # Run every 5 minutes
+            cleanup_stale_video_rooms()
+    
+    cleanup_thread = Thread(target=background_cleanup)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
+
+    # Run the application with Socket.IO
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True, 
+                 use_reloader=True,                  
+                 log_output=True)

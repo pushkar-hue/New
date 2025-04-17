@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { PageLayout } from "@/components/page-layout"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,10 +11,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { type Models, type PredictionResult, getModels, predictImage } from "@/lib/api"
-import { AlertCircle, FileUp, Check } from "lucide-react"
+import { ApiService, type Models, type PredictionResult } from "@/lib/api-service"
+import { AlertCircle, FileUp, Check, Download } from "lucide-react"
+import { ProtectedRoute } from "@/components/protected-route"
 
 export default function DiagnosisPage() {
+  return (
+    <ProtectedRoute>
+      <DiagnosisContent />
+    </ProtectedRoute>
+  )
+}
+
+function DiagnosisContent() {
   const [models, setModels] = useState<Models | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>("")
   const [file, setFile] = useState<File | null>(null)
@@ -24,29 +33,43 @@ export default function DiagnosisPage() {
   const [result, setResult] = useState<PredictionResult | null>(null)
   const [loadingModels, setLoadingModels] = useState<boolean>(true)
 
-  useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const modelData = await getModels()
-        setModels(modelData)
-        if (Object.keys(modelData).length > 0) {
-          setSelectedModel(Object.keys(modelData)[0])
-        }
-      } catch (err) {
-        setError("Failed to load models. Please try again later.")
-      } finally {
-        setLoadingModels(false)
+  // Memoize fetchModels to prevent unnecessary re-renders
+  const fetchModels = useCallback(async () => {
+    try {
+      const modelData = await ApiService.getModels()
+      setModels(modelData)
+      if (Object.keys(modelData).length > 0) {
+        setSelectedModel(Object.keys(modelData)[0])
       }
+    } catch (err) {
+      setError("Failed to load models. Please try again later.")
+    } finally {
+      setLoadingModels(false)
     }
-
-    fetchModels()
   }, [])
+
+  useEffect(() => {
+    fetchModels()
+  }, [fetchModels])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
     if (selectedFile) {
+      // Validate file size
+      if (selectedFile.size > 16 * 1024 * 1024) {
+        setError("File size exceeds 16MB limit. Please select a smaller file.")
+        return
+      }
+
       setFile(selectedFile)
-      setPreview(URL.createObjectURL(selectedFile))
+
+      // Optimize image preview
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setPreview(reader.result as string)
+      }
+      reader.readAsDataURL(selectedFile)
+
       setResult(null)
       setError(null)
     }
@@ -63,12 +86,23 @@ export default function DiagnosisPage() {
     setError(null)
 
     try {
-      const predictionResult = await predictImage(file, selectedModel)
+      const predictionResult = await ApiService.predictImage(file, selectedModel)
       setResult(predictionResult)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred during prediction.")
+      console.error("Prediction error:", err)
+      setError(
+        err instanceof Error
+          ? err.message
+          : "An error occurred during prediction. The server might be unavailable or taking too long to respond. Please try again later.",
+      )
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleDownloadReport = () => {
+    if (result && result.report_url) {
+      ApiService.downloadReport(result.report_url)
     }
   }
 
@@ -221,11 +255,10 @@ export default function DiagnosisPage() {
                       </Alert>
                     </CardContent>
                     <CardFooter>
-                      <a href={result.report_url} target="_blank" rel="noopener noreferrer" className="w-full">
-                        <Button variant="outline" className="w-full">
-                          Download Full Report
-                        </Button>
-                      </a>
+                      <Button variant="outline" className="w-full" onClick={handleDownloadReport}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Download Full Report
+                      </Button>
                     </CardFooter>
                   </Card>
                 </TabsContent>
@@ -271,13 +304,17 @@ export default function DiagnosisPage() {
                         }}
                       />
                     </CardContent>
-                    <CardFooter>
+                    <CardFooter className="flex flex-col space-y-4">
                       <div className="text-sm text-muted-foreground">
                         <p className="italic">
                           DISCLAIMER: This report is AI-generated and should not replace professional medical advice.
                           Please consult with a healthcare provider for proper diagnosis and treatment.
                         </p>
                       </div>
+                      <Button variant="outline" className="w-full" onClick={handleDownloadReport}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Download Full Report
+                      </Button>
                     </CardFooter>
                   </Card>
                 </TabsContent>
@@ -306,4 +343,3 @@ export default function DiagnosisPage() {
     </PageLayout>
   )
 }
-

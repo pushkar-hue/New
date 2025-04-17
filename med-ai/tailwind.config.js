@@ -8,6 +8,9 @@ module.exports = {
     "./src/**/*.{ts,tsx,js,jsx}",
     "*.{js,ts,jsx,tsx,mdx}",
   ],
+  future: {
+    hoverOnlyWhenSupported: true, // Better performance on mobile
+  },
   theme: {
     container: {
       center: true,
@@ -67,6 +70,18 @@ module.exports = {
           DEFAULT: "hsl(221, 83%, 53%)",
           foreground: "hsl(0, 0%, 100%)",
         },
+        sidebar: {
+          background: "hsl(var(--sidebar-background))",
+          foreground: "hsl(var(--sidebar-foreground))",
+          border: "hsl(var(--sidebar-border))",
+          primary: "hsl(var(--sidebar-primary))",
+          "primary-foreground": "hsl(var(--sidebar-primary-foreground))",
+          accent: "hsl(var(--sidebar-accent))",
+          "accent-foreground": "hsl(var(--sidebar-accent-foreground))",
+          muted: "hsl(var(--sidebar-muted))",
+          "muted-foreground": "hsl(var(--sidebar-muted-foreground))",
+          ring: "hsl(var(--sidebar-ring))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -101,8 +116,11 @@ module.exports = {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
         "hero-pattern": "url('/images/hero-pattern.svg')",
       },
+      transitionProperty: {
+        height: "height",
+        spacing: "margin, padding",
+      },
     },
   },
   plugins: [require("tailwindcss-animate")],
 }
-

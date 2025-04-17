@@ -18,6 +18,7 @@ import {
   Home,
   Stethoscope,
   Calendar,
+  LayoutDashboard,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -28,13 +29,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 
 export function Navbar() {
   const [isOpen, setIsOpen] = useState(false)
   const { user, logout, isAuthenticated } = useAuth()
   const [scrolled, setScrolled] = useState(false)
   const pathname = usePathname()
+  const router = useRouter()
 
   useEffect(() => {
     const handleScroll = () => {
@@ -45,8 +47,20 @@ export function Navbar() {
     return () => window.removeEventListener("scroll", handleScroll)
   }, [])
 
-  const navLinks = [
-    { href: "/", label: "Home", icon: <Home className="h-4 w-4 mr-2" /> },
+  const handleLogout = async () => {
+    try {
+      await logout()
+      router.push("/login")
+    } catch (error) {
+      console.error("Logout error:", error)
+    }
+  }
+
+  const navLinks = [{ href: "/", label: "Home", icon: <Home className="h-4 w-4 mr-2" /> }]
+
+  // Links for authenticated users
+  const authLinks = [
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4 mr-2" /> },
     { href: "/diagnosis", label: "Diagnosis", icon: <Activity className="h-4 w-4 mr-2" /> },
     { href: "/symptom-checker", label: "Symptom Checker", icon: <Stethoscope className="h-4 w-4 mr-2" /> },
     { href: "/chat", label: "AI Chat", icon: <MessageSquare className="h-4 w-4 mr-2" /> },
@@ -54,13 +68,15 @@ export function Navbar() {
   ]
 
   // Additional links for authenticated users
-  const authLinks = [
-    { href: "/appointments", label: "Appointments", icon: <Calendar className="h-4 w-4 mr-2" /> },
+  const communicationLinks = [
+    { href: "/chat-with-doctor", label: "Doctor Chat", icon: <MessageSquare className="h-4 w-4 mr-2" /> },
     { href: "/video-call", label: "Video Call", icon: <Video className="h-4 w-4 mr-2" /> },
+    { href: "/appointments", label: "Appointments", icon: <Calendar className="h-4 w-4 mr-2" /> },
   ]
 
   // Determine which links to show based on authentication status
   const links = isAuthenticated ? [...navLinks, ...authLinks] : navLinks
+  const extraLinks = isAuthenticated ? communicationLinks : []
 
   return (
     <nav
@@ -92,6 +108,41 @@ export function Navbar() {
                   {link.label}
                 </Link>
               ))}
+
+              {isAuthenticated && extraLinks.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className="flex items-center px-3 py-2 text-sm font-medium rounded-md">
+                      <span className="mr-1">More</span>
+                      <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 15 15"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-4 w-4"
+                      >
+                        <path
+                          d="M3.13523 6.15803C3.3241 5.95657 3.64052 5.94637 3.84197 6.13523L7.5 9.56464L11.158 6.13523C11.3595 5.94637 11.6759 5.95657 11.8648 6.15803C12.0536 6.35949 12.0434 6.67591 11.842 6.86477L7.84197 10.6148C7.64964 10.7951 7.35036 10.7951 7.15803 10.6148L3.15803 6.86477C2.95657 6.67591 2.94637 6.35949 3.13523 6.15803Z"
+                          fill="currentColor"
+                          fillRule="evenodd"
+                          clipRule="evenodd"
+                        ></path>
+                      </svg>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {extraLinks.map((link) => (
+                      <DropdownMenuItem key={link.href} asChild>
+                        <Link href={link.href} className="cursor-pointer flex items-center">
+                          {link.icon}
+                          <span>{link.label}</span>
+                        </Link>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </div>
           </div>
           <div className="hidden sm:ml-6 sm:flex sm:items-center space-x-2">
@@ -132,7 +183,10 @@ export function Navbar() {
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout} className="cursor-pointer text-destructive focus:text-destructive">
+                  <DropdownMenuItem
+                    onClick={handleLogout}
+                    className="cursor-pointer text-destructive focus:text-destructive"
+                  >
                     <LogOut className="mr-2 h-4 w-4" />
                     <span>Log out</span>
                   </DropdownMenuItem>
@@ -150,6 +204,7 @@ export function Navbar() {
             )}
           </div>
           <div className="-mr-2 flex items-center sm:hidden">
+            <ModeToggle />
             <Button
               variant="ghost"
               onClick={() => setIsOpen(!isOpen)}
@@ -184,6 +239,23 @@ export function Navbar() {
                 {link.label}
               </Link>
             ))}
+
+            {isAuthenticated &&
+              extraLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={`flex items-center px-3 py-2 text-base font-medium rounded-md ${
+                    pathname === link.href
+                      ? "text-primary bg-primary/10"
+                      : "text-foreground hover:text-primary hover:bg-primary/5"
+                  }`}
+                  onClick={() => setIsOpen(false)}
+                >
+                  {link.icon}
+                  {link.label}
+                </Link>
+              ))}
           </div>
           <div className="pt-4 pb-3 border-t border-gray-200 dark:border-gray-700">
             {isAuthenticated ? (
@@ -221,7 +293,7 @@ export function Navbar() {
                   </Link>
                   <button
                     onClick={() => {
-                      logout()
+                      handleLogout()
                       setIsOpen(false)
                     }}
                     className="flex w-full items-center px-3 py-2 text-base font-medium rounded-md text-destructive hover:bg-destructive/5"
@@ -245,13 +317,9 @@ export function Navbar() {
                 </Button>
               </div>
             )}
-            <div className="mt-3 px-4 flex justify-center">
-              <ModeToggle />
-            </div>
           </div>
         </div>
       )}
     </nav>
   )
 }
-
