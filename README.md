@@ -83,10 +83,10 @@ All AI models were developed from scratch and trained on publicly available medi
 
 ## Team Contributions
 
-- **Frontend Development**: Prachi, Khushi, Mohit and Pushkar 
-- **Backend Development**: Mohit, Pushkar  
-- **AI Model Development**: Pushkar (developed all six models from scratch)  
-- **Model Optimization**: Pushkar (using EfficientNetB0 for transfer learning)
+- **Frontend Development**: 
+- **Backend Development**:
+- **AI Model Development**:
+- **Model Optimization**:
 
 ---
 
